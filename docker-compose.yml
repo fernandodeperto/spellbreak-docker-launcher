@@ -1,0 +1,17 @@
+services:
+  solo:
+    build: .
+    image: spellbreak-server
+    environment:
+      SB_GAME_MODE: Solo
+    restart: unless-stopped
+    ports:
+      - "7777:7777/udp"
+  dominion:
+    build: .
+    image: spellbreak-server
+    environment:
+      SB_GAME_MODE: Capture
+    restart: unless-stopped
+    ports:
+      - "7778:7777/udp"

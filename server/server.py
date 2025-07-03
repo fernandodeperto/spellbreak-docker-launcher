@@ -6,51 +6,41 @@ import subprocess
 import time
 
 from tenacity import retry, wait_fixed, stop_after_attempt
-from typing import List, IO
+from typing import Optional, IO
 
 from server.config import config
 from server.state import State
 from server.pattern import COMPILED_PATTERNS
 
+BIN_DIR = "/spellbreak-server/BaseServer/g3/Binaries/Win64/g3Server-Win64-Test.exe"
+LOG_DIR = "/spellbreak-server/BaseServer/g3/Saved/Logs"
 
-def start_background_process(command: List[str]) -> subprocess.Popen:
+
+def start_background_process(log_file_name: str) -> subprocess.Popen:
+    command = [
+        "wine",
+        BIN_DIR,
+        f"Alpha_Resculpt?game={config.game.mode}",
+        f"-port={config.server.port}",
+        f"-LOG={log_file_name}",
+    ]
+    logger.debug(f"running command {command}")
+
+    os.environ["WINEPREFIX"] = "/root/.wine"
+    os.environ["WINEDEBUG"] = "fixme-all"
+
     with open(os.devnull, "w") as devnull:
-        process = subprocess.Popen(
+        if config.server.show_game_logs:
+            return subprocess.Popen(command)
+
+        return subprocess.Popen(
             command,
             stdout=devnull,
             stderr=devnull,
         )
 
-    return process
 
-
-def start_thread(
-    path: str, logs_queue: queue.Queue, stop_event: threading.Event
-) -> threading.Thread:
-    thread = threading.Thread(target=read_logs, args=(path, logs_queue, stop_event))
-    thread.start()
-
-    return thread
-
-
-def read_logs(path: str, logs_queue: queue.Queue, stop_event: threading.Event) -> None:
-    @retry(wait=wait_fixed(1), stop=stop_after_attempt(30))
-    def open_logs_file(path: str) -> IO:
-        return open(path, "r")
-
-    logs_file = open_logs_file(path)
-
-    while not stop_event.is_set():
-        line = logs_file.readline()
-
-        if line is None or line == "":
-            logger.debug("did not receive a line")
-            time.sleep(1)
-        else:
-            logs_queue.put(line.strip())
-
-
-def process_log_line(line: str) -> State:
+def process_log_line(line: str) -> Optional[State]:
     results = [
         (pattern_name, compiled_pattern.search(line))
         for pattern_name, compiled_pattern in COMPILED_PATTERNS
@@ -90,85 +80,68 @@ def process_log_line(line: str) -> State:
 
 
 def main():
-    def stop_process():
-        process.terminate()
-        stop_event.set()
-        thread.join()
+    logger.debug(config)
+    logger.debug(os.environ)
 
-    command = [
-        "wine",
-        "/spellbreak-server/BaseServer/g3/Binaries/Win64/g3Server-Win64-Test.exe",
-        f"Alpha_Resculpt?game={config.game.mode}",
-        f"-port={config.server.port}",
-        f"-LOG={config.game.log_file}",
-    ]
+    while True:
+        log_file_name = f"server-{os.urandom(4).hex()}.log"
+        logger.debug(f"using log file {log_file_name}")
 
-    os.environ["WINEPREFIX"] = "/root/.wine"
-    os.environ["WINEDEBUG"] = "fixme-all"
+        process = start_background_process(log_file_name)
 
-    logger.info(f"using config {config}")
+        state = State.PROCESS_STARTING
+        next_state = None
+        state_start_time = time.time()
 
-    logger.debug(f"running command {command}")
+        @retry(wait=wait_fixed(1), stop=stop_after_attempt(30))
+        def open_log_file(path: str) -> IO:
+            return open(os.path.join(LOG_DIR, path), "r")
 
-    process = start_background_process(command)
-    logger.info(f"started process with pid {process.pid}")
+        log_file = open_log_file(log_file_name)
+        line = None
 
-    logs_queue = queue.Queue()
-    stop_event = threading.Event()
-    thread = start_thread(
-        f"/spellbreak-server/BaseServer/g3/Saved/Logs/{config.game.log_file}",
-        logs_queue,
-        stop_event,
-    )
+        while True:
+            line = log_file.readline()
 
-    state = State.PROCESS_STARTING
-    next_state = None
-    state_start_time = time.time()
+            if line is not None and line != "":
+                logger.debug(line)
+                next_state = process_log_line(line)
 
-    line = None
+            state_duration = int(time.time() - state_start_time)
 
-    while thread.is_alive() or not logs_queue.empty():
-        try:
-            line = logs_queue.get(timeout=1)
-        except queue.Empty:
-            line = None
+            if next_state is not None and next_state != state:
+                logger.info(f"new state {next_state} after {state_duration} seconds")
 
-        if line is not None:
-            logger.debug(line)
+                state_start_time = time.time()
+                state = next_state
 
-            next_state = process_log_line(line)
+            match state:
+                case State.LOBBY:
+                    if state_duration > config.server.idle_timer:
+                        logger.info("stopping the process due to inactivity")
+                        process.terminate()
+                        break
 
-        state_duration = int(time.time() - state_start_time)
-
-        if next_state is not None and next_state != state:
-            logger.info(f"new state {next_state} after {state_duration} seconds")
-
-            state = next_state
-            state_start_time = time.time()
-
-        match state:
-            case State.LOBBY:
-                if state_duration > config.server.idle_timer:
-                    logger.info("stopping the process due to inactivity")
+                case State.MATCH_COMPLETE:
+                    logger.info("match complete")
+                    process.terminate()
                     break
 
-            case State.MATCH_ENDING:
-                logger.info("match ending")
+                case State.LOG_FILE_CLOSED:
+                    logger.info("process done")
+                    process.terminate()
+                    break
+
+            if process.poll() is not None:
+                logger.info("process ended unexpectedly")
                 break
 
-            case State.MATCH_COMPLETE:
-                logger.info("match complete")
-                break
+            if line is None or line == "":
+                time.sleep(1)
 
-            case State.LOG_FILE_CLOSED:
-                logger.info("process done")
-                break
+        process.wait()
 
-        if process.poll() is not None:
-            logger.info("process ended unexpectedly")
-            break
-
-    stop_process()
+        os.remove(os.path.join(LOG_DIR, log_file_name))
 
 
 logging.basicConfig(

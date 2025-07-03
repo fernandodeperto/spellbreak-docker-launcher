@@ -3,7 +3,11 @@ services:
     build: .
     image: spellbreak-server
     environment:
+      S6_KEEP_ENV: 1
       SB_GAME_MODE: Solo
+      SB_SERVER_IDLE_TIMER: 60
+      SB_SERVER_LOG_LEVEL: INFO
+      SB_SERVER_SHOW_GAME_LOGS: "false"
     restart: unless-stopped
     ports:
       - "7777:7777/udp"
@@ -11,7 +15,10 @@ services:
     build: .
     image: spellbreak-server
     environment:
+      S6_KEEP_ENV: 1
       SB_GAME_MODE: Capture
+      SB_SERVER_LOG_LEVEL: DEBUG
+      SB_SERVER_SHOW_GAME_LOGS: "true"
     restart: unless-stopped
     ports:
       - "7778:7777/udp"

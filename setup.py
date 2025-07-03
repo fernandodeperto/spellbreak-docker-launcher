@@ -7,6 +7,7 @@ setup(
     version=__version__,
     packages=find_packages(),
     install_requires=[
+        "environ-config",
         "tenacity",
     ],
     entry_points={

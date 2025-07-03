@@ -5,7 +5,7 @@ services:
     environment:
       S6_KEEP_ENV: 1
       SB_GAME_MODE: Solo
-      SB_SERVER_IDLE_TIMER: 60
+      SB_SERVER_IDLE_TIMER: 1200
       SB_SERVER_LOG_LEVEL: INFO
       SB_SERVER_SHOW_GAME_LOGS: "false"
     restart: unless-stopped

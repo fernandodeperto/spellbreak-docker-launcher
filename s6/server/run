@@ -1,0 +1,3 @@
+#!/usr/bin/bash
+
+( cd /spellbreak-server/spellbreak-server/ && python3 -m server.server )
